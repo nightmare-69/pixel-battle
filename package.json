@@ -1,0 +1,13 @@
+{
+  "name": "pixel-battle",
+  "version": "1.0.0",
+  "description": "1v1 pixel art duel with player voting",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  }
+}
