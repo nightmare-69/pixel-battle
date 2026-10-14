@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pixel Battle</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <div class="scene">
+      <div class="rectangle" id="card">
+
+        <!-- 1. LOBBY -->
+        <section id="screen-lobby" class="screen">
+          <div class="field">
+            <input type="text" id="name" placeholder=" " maxlength="16">
+            <label for="name">Enter your name</label>
+          </div>
+          <div class="field">
+            <input type="text" id="code" placeholder=" " maxlength="4" inputmode="numeric">
+            <label for="code">Room code (to join)</label>
+          </div>
+          <div class="buttons">
+            <button class="primary" id="btn-create">Create Room</button>
+            <button class="secondary" id="btn-join">Join Room</button>
+          </div>
+          <p class="msg" id="lobby-msg"></p>
+        </section>
+
+        <!-- 2. WAITING ROOM -->
+        <section id="screen-wait" class="screen" hidden>
+          <h2>Room <span id="room-code">----</span></h2>
+          <p class="hint">Share this code with your friend.</p>
+          <ul class="list" id="player-list"></ul>
+          <div class="row" id="time-row">
+            <span>Time limit</span>
+            <select id="time-select">
+              <option value="60">1 min</option>
+              <option value="120">2 min</option>
+              <option value="180">3 min</option>
+              <option value="300">5 min</option>
+            </select>
+          </div>
+          <p class="hint" id="time-text"></p>
+          <div class="buttons">
+            <button class="primary" id="btn-start" hidden>Start Game</button>
+          </div>
+          <p class="msg" id="wait-msg"></p>
+        </section>
+
+        <!-- 3. DRAWING -->
+        <section id="screen-game" class="screen" hidden>
+          <div id="timer">2:00</div>
+          <div class="game-layout">
+            <div class="side">
+              <div class="tools" id="palette"></div>
+              <div class="tools">
+                <button class="tool" id="size1">1px</button>
+                <button class="tool" id="size2">2px</button>
+                <button class="tool" id="eraser">Eraser</button>
+              </div>
+            </div>
+            <div class="board-wrap">
+              <canvas id="board" width="32" height="32"></canvas>
+            </div>
+          </div>
+          <p class="hint">Draw your pixel art!</p>
+        </section>
+
+        <!-- 3b. VOTE -->
+        <section id="screen-vote" class="screen" hidden>
+          <h2>Which drawing is better?</h2>
+          <p class="hint">Pick one. If you both pick the same drawing, it wins.</p>
+          <div class="gallery" id="vote-cards"></div>
+          <p class="msg" id="vote-msg"></p>
+        </section>
+
+        <!-- 4. RESULTS -->
+        <section id="screen-results" class="screen" hidden>
+          <h2 id="verdict"></h2>
+          <p class="hint" id="reason"></p>
+          <div class="gallery" id="gallery"></div>
+          <div class="buttons">
+            <button class="primary" id="btn-again">Back to Lobby</button>
+          </div>
+        </section>
+
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const socket = io();
+      const $ = (id) => document.getElementById(id);
+      const PALETTE = [
+        "#000000", "#ffffff", "#808080", "#a0522d",
+        "#ff0000", "#ff9900", "#ffff00", "#ff66cc",
+        "#00aa00", "#00ffff", "#0066ff", "#9900cc"
+      ];
+
+      const canvas = $("board");
+      const ctx = canvas.getContext("2d");
+      let color = PALETTE[0], eraser = false, brush = 1;
+      let drawing = false, locked = true, tickTimer = null;
+
+      // Show one screen, hide the rest
+      function show(id) {
+        document.querySelectorAll(".screen").forEach((s) => (s.hidden = s.id !== id));
+        document.body.classList.toggle("in-game", id === "screen-game");
+      }
+
+      // Click animation on every button
+      document.querySelectorAll("button").forEach((b) => {
+        b.addEventListener("click", () => {
+          b.classList.remove("pop");
+          void b.offsetWidth; // restart the animation
+          b.classList.add("pop");
+        });
+      });
+
+      // ---------- LOBBY ----------
+      const lobbyMsg = (text) => ($("lobby-msg").textContent = text);
+
+      $("btn-create").onclick = () => {
+        socket.emit("create-room", { name: $("name").value }, (res) => {
+          if (!res.ok) lobbyMsg(res.error);
+        });
+      };
+
+      $("btn-join").onclick = () => {
+        socket.emit("join-room", { name: $("name").value, code: $("code").value }, (res) => {
+          if (!res.ok) lobbyMsg(res.error);
+        });
+      };
+
+      // ---------- WAITING ROOM ----------
+      socket.on("room-update", (room) => {
+        const isAdmin = room.adminId === socket.id;
+        $("room-code").textContent = room.code;
+        $("player-list").innerHTML = room.players
+          .map((p) => `<li>${p.name}${p.id === room.adminId ? " 👑 admin" : ""}${p.id === socket.id ? " (you)" : ""}</li>`)
+          .join("");
+
+        $("time-row").hidden = !isAdmin;          // only admin picks time
+        $("time-text").hidden = isAdmin;
+        $("time-select").value = String(room.timeLimit);
+        $("time-text").textContent = `Time limit: ${room.timeLimit / 60} min`;
+
+        $("btn-start").hidden = !(isAdmin && room.players.length === 2);
+        $("wait-msg").textContent =
+          room.players.length < 2 ? "Waiting for another player..." :
+          isAdmin ? "Both players are here. Press Start Game!" :
+          "Waiting for the admin to start...";
+
+        show("screen-wait");
+      });
+
+      $("time-select").onchange = (e) => {
+        socket.emit("set-time", { seconds: Number(e.target.value) });
+      };
+
+      $("btn-start").onclick = () => socket.emit("start-game");
+
+      // ---------- DRAWING ----------
+      PALETTE.forEach((c) => {
+        const s = document.createElement("div");
+        s.className = "swatch";
+        s.dataset.color = c;
+        s.style.background = c;
+        s.onclick = () => { color = c; eraser = false; markTools(); };
+        $("palette").appendChild(s);
+      });
+
+      function markTools() {
+        document.querySelectorAll(".swatch").forEach((s) =>
+          s.classList.toggle("selected", !eraser && s.dataset.color === color));
+        $("size1").classList.toggle("selected", brush === 1);
+        $("size2").classList.toggle("selected", brush === 2);
+        $("eraser").classList.toggle("selected", eraser);
+      }
+
+      $("size1").onclick = () => { brush = 1; markTools(); };
+      $("size2").onclick = () => { brush = 2; markTools(); };
+      $("eraser").onclick = () => { eraser = !eraser; markTools(); };
+
+      function resetBoard() {
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, 32, 32);
+      }
+
+      function cellFromEvent(e) {
+        const r = canvas.getBoundingClientRect();
+        const x = Math.floor(((e.clientX - r.left) / r.width) * 32);
+        const y = Math.floor(((e.clientY - r.top) / r.height) * 32);
+        return { x: Math.min(31, Math.max(0, x)), y: Math.min(31, Math.max(0, y)) };
+      }
+
+      function paintAt(x, y) {
+        ctx.fillStyle = eraser ? "#ffffff" : color;
+        for (let dx = 0; dx < brush; dx++) {
+          for (let dy = 0; dy < brush; dy++) {
+            const px = x + dx, py = y + dy;
+            if (px < 32 && py < 32) ctx.fillRect(px, py, 1, 1);
+          }
+        }
+      }
+
+      canvas.addEventListener("pointerdown", (e) => {
+        if (locked) return;
+        canvas.setPointerCapture(e.pointerId);
+        drawing = true;
+        const c = cellFromEvent(e);
+        paintAt(c.x, c.y);
+      });
+
+      canvas.addEventListener("pointermove", (e) => {
+        if (!drawing || locked) return;
+        const c = cellFromEvent(e);
+        paintAt(c.x, c.y);
+      });
+
+      window.addEventListener("pointerup", () => { drawing = false; });
+
+      // Export the 32x32 board, scaled up to 256x256 so the AI can see it clearly
+      function exportPNG() {
+        const big = document.createElement("canvas");
+        big.width = 256;
+        big.height = 256;
+        const bctx = big.getContext("2d");
+        bctx.imageSmoothingEnabled = false;
+        bctx.drawImage(canvas, 0, 0, 256, 256);
+        return big.toDataURL("image/png");
+      }
+
+      function startTimer(endAt) {
+        clearInterval(tickTimer);
+        const update = () => {
+          const left = Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
+          $("timer").textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+          if (left <= 0) clearInterval(tickTimer);
+        };
+        update();
+        tickTimer = setInterval(update, 250);
+      }
+
+      socket.on("game-start", ({ endAt }) => {
+        show("screen-game");
+        resetBoard();
+        locked = false;
+        markTools();
+        startTimer(endAt);
+      });
+
+      socket.on("time-up", () => {
+        locked = true;
+        drawing = false;
+        clearInterval(tickTimer);
+        $("timer").textContent = "Time's up!";
+        socket.emit("submit", { png: exportPNG() });
+      });
+
+      // ---------- RESULTS ----------
+      socket.on("results", ({ drawings, winnerName, reason, error }) => {
+        $("verdict").textContent = error ? "Judging failed" :
+          winnerName ? `🏆 ${winnerName} wins!` : "It's a tie!";
+        $("reason").textContent = error || reason || "";
+        $("gallery").innerHTML = drawings
+          .map((d) => `<figure>${d.png ? `<img src="${d.png}" alt="">` : ""}<figcaption>${d.name}</figcaption></figure>`)
+          .join("");
+        show("screen-results");
+      });
+
+      $("btn-again").onclick = () => location.reload();
+
+      // ---------- VOTING ----------
+      socket.on("vote-start", ({ cards }) => {
+        show("screen-vote");
+        $("vote-msg").textContent = "";
+        const wrap = $("vote-cards");
+        wrap.innerHTML = "";
+
+        cards.forEach((c) => {
+          const card = document.createElement("button");
+          card.className = "vote-card";
+          card.disabled = !c.png;
+
+          const img = document.createElement("img");
+          img.alt = "";
+          if (c.png) img.src = c.png;
+
+          const label = document.createElement("span");
+          label.textContent = c.id === socket.id ? `${c.name} (you)` : c.name;
+
+          card.append(img, label);
+          card.onclick = () => {
+            socket.emit("vote", { choice: c.id });
+            document.querySelectorAll(".vote-card").forEach((b) => (b.disabled = true));
+            card.classList.add("chosen");
+            $("vote-msg").textContent = "Vote sent. Waiting for your opponent...";
+          };
+          wrap.appendChild(card);
+        });
+      });
+
+      // ---------- ROOM CLOSED ----------
+      socket.on("room-closed", (message) => {
+        alert(message);
+        location.reload();
+      });
+
+      show("screen-lobby");
+    </script>
+  </body>
+</html>
